@@ -10,9 +10,10 @@ import publicIp from 'public-ip';
 import { v4 } from "uuid";
 import {Cache} from "./cache/Cache";
 import {RedisCache} from "./cache/RedisCache";
-import {Messenger} from "./messaging/Messenger";
 import {RabbitmqMessenger} from "./messaging/RabbitmqMessenger";
 import {Player} from "./model/Player";
+import {LocalCache} from "./cache/LocalCache";
+import {LocalMessenger} from "./messaging/LocalMessenger";
 
 // TODO This needs to have a rework using preferably MVC models instead
 
@@ -41,11 +42,15 @@ import {Player} from "./model/Player";
 	const io = socketIO(server);
 
 	const serverId = v4();
-// NOTE: You can use your own implementation of messenger or cache, here, Redis and RabbitMQ are the default ones
-	const cache: Cache = new RedisCache(process.env.REDIS_URL!);
-	const messenger = new RabbitmqMessenger(process.env.RABBITMQ_URL!, cache, serverId);
-	await messenger.connect();
-
+	// Comment this part and uncomment next part to activate cluster mode
+	// NOTE: This part replicate a local, non-clustered server
+	const cache = new LocalCache();
+	const messenger = new LocalMessenger();
+	// Uncomment this part if you want to activate the cluster mode
+	// NOTE: You can use your own implementation of messenger or cache, here, Redis and RabbitMQ are the default ones
+	//	const cache: Cache = new RedisCache(process.env.REDIS_URL!);
+	//	const messenger = new RabbitmqMessenger(process.env.RABBITMQ_URL!, cache, serverId);
+	//	await messenger.connect();
 
 	interface Signal {
 		data: string;
@@ -95,6 +100,7 @@ import {Player} from "./model/Player";
 			}
 
 			if (!sessionCreated) {
+				sessionCreated = true;
 				await cache.updateSession(socket.id, serverId);
 			}
 
@@ -163,6 +169,9 @@ import {Player} from "./model/Player";
 
 		socket.on('disconnect', () => {
 			connectionCount--;
+			if (player.roomId) {
+				cache.removePlayerFromRoom(player.roomId, player.id);
+			}
 			cache.clearSession(socket.id);
 			logger.info("Total connected: %d", connectionCount);
 		})
