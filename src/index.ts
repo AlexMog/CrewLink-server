@@ -7,6 +7,14 @@ import socketIO from 'socket.io';
 import Tracer from 'tracer';
 import morgan from 'morgan';
 import publicIp from 'public-ip';
+import { v4 } from "uuid";
+import {Cache} from "./cache/Cache";
+import {RedisCache} from "./cache/RedisCache";
+import {Messenger} from "./messaging/Messenger";
+import {RabbitmqMessenger} from "./messaging/RabbitmqMessenger";
+import {Player} from "./model/Player";
+
+// TODO This needs to have a rework using preferably MVC models instead
 
 const httpsEnabled = !!process.env.HTTPS;
 
@@ -31,7 +39,11 @@ if (httpsEnabled) {
 }
 const io = socketIO(server);
 
-const playerIds = new Map<string, number>();
+// NOTE: You can use your own implementation of messenger or cache, here, Redis and RabbitMQ are the default ones
+const cache: Cache = new RedisCache(process.env.REDIS_URL!);
+const messenger: Messenger = new RabbitmqMessenger(process.env.RABBITMQ_URL!);
+
+const serverId = v4();
 
 interface Signal {
 	data: string;
@@ -62,58 +74,84 @@ app.get('/health', (req, res) => {
 io.on('connection', (socket: socketIO.Socket) => {
 	connectionCount++;
 	logger.info("Total connected: %d", connectionCount);
-	let code: string | null = null;
+	let player: Player = {
+		roomId: undefined,
+		serverId: serverId,
+		clientId: undefined,
+		id: socket.id,
+	};
 
-	socket.on('join', (c: string, id: number) => {
-		if (typeof c !== 'string' || typeof id !== 'number') {
+	socket.on('join', async (code: string, id: number) => {
+		if (typeof code !== 'string' || typeof id !== 'number') {
 			socket.disconnect();
-			logger.error(`Socket %s sent invalid join command: %s %d`, socket.id, c, id);
+			logger.error(`Socket %s sent invalid join command: %s %d`, socket.id, code, id);
 			return;
 		}
-		code = c;
-		socket.join(code);
-		socket.to(code).broadcast.emit('join', socket.id, id);
+		player.roomId = code;
 
-		let socketsInLobby = Object.keys(io.sockets.adapter.rooms[code].sockets);
+		const playersInRoom = await cache.retrieveRoomPlayers(code);
 		let ids: any = {};
-		for (let s of socketsInLobby) {
-			if (s !== socket.id)
-				ids[s] = playerIds.get(s);
+		for (const player of playersInRoom) {
+			ids[player.id] = player.clientId;
 		}
 		socket.emit('setIds', ids);
+
+		socket.join(code);
+		await cache.addPlayerToRoom(player.roomId, player);
+		await messenger.broadcastToRoom(player.roomId, {
+			command: "join",
+			args: [socket.id, id],
+		});
 	});
 
-	socket.on('id', (id: number) => {
+	socket.on('id', async (id: number) => {
 		if (typeof id !== 'number') {
 			socket.disconnect();
 			logger.error(`Socket %s sent invalid id command: %d`, socket.id, id);
 			return;
 		}
-		playerIds.set(socket.id, id);
-		socket.to(code).broadcast.emit('setId', socket.id, id);
-	})
+
+		player.clientId = id;
+		if (!player.roomId) {
+			socket.disconnect();
+			logger.error('Socket %s is not a in room.', socket.id);
+			return;
+		}
+
+		// Cache player update
+		await cache.addPlayerToRoom(player.roomId, player);
+		await messenger.broadcastToRoom(player.roomId, {
+			command: "setId",
+			args: [id],
+		});
+	});
 
 
 	socket.on('leave', () => {
-		if (code) socket.leave(code);
+		if (player.roomId) socket.leave(player.roomId);
 	})
 
-	socket.on('signal', (signal: Signal) => {
+	socket.on('signal', async (signal: Signal) => {
 		if (typeof signal !== 'object' || !signal.data || !signal.to || typeof signal.to !== 'string') {
 			socket.disconnect();
 			logger.error(`Socket %s sent invalid signal command: %j`, socket.id, signal);
 			return;
 		}
+
 		const { to, data } = signal;
-		io.to(to).emit('signal', {
-			data,
-			from: socket.id
+		await messenger.sendToPlayer(to, {
+			command: "signal",
+			args: [
+				{
+					data,
+					from: socket.id
+				}
+			]
 		});
 	});
 
 	socket.on('disconnect', () => {
 		connectionCount--;
-		playerIds.delete(socket.id);
 		logger.info("Total connected: %d", connectionCount);
 	})
 
