@@ -14,4 +14,7 @@ export interface Cache {
    */
   addPlayerToRoom(roomId: string, player: Player): Promise<void>;
   removePlayerFromRoom(roomId: string, playerId: string): Promise<void>;
+  updateSession(socketId: string, serverId: string): Promise<void>;
+  clearSession(socketId: string): Promise<void>;
+  getSession(socketId: string): Promise<string>;
 }

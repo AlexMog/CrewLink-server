@@ -4,6 +4,7 @@ import Redis, {RedisClient} from "redis";
 
 export class RedisCache implements Cache {
   private readonly ROOM_KEY_PRE = process.env.REDIS_ROOM_KEY_PRE || "crewlink:room:";
+  private readonly SESSION_KEY_PRE = process.env.REDIS_ROOM_KEY_PRE || "crewlink:session:";
   private readonly redis: RedisClient;
 
   constructor(redisUrl: string) {
@@ -41,6 +42,42 @@ export class RedisCache implements Cache {
         }
         resolve(Object.keys(reply).map(playerId => JSON.parse(reply[playerId])));
       })
+    });
+  }
+
+  clearSession(socketId: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.redis.del(`${this.SESSION_KEY_PRE}{${socketId}}`, (err, reply) => {
+        if (err) {
+          reject(err);
+        }
+        resolve();
+      });
+    });
+  }
+
+  updateSession(socketId: string, serverId: string): Promise<void> {
+    // FIXME: In a ideal world, a ping-pong mechanism must exist between client and server and this
+    //  should have a TTL and the expire value of this TTL should be updated on each ping, to avoid memory leaks
+    //  on redis
+    return new Promise<void>((resolve, reject) => {
+      this.redis.set(`${this.SESSION_KEY_PRE}{${socketId}}`, serverId,(err, reply) => {
+        if (err) {
+          reject(err);
+        }
+        resolve();
+      });
+    });
+  }
+
+  getSession(socketId: string): Promise<string | null> {
+    return new Promise<string>((resolve, reject) => {
+      this.redis.get(`${this.SESSION_KEY_PRE}{${socketId}}`,(err, reply) => {
+        if (err) {
+          reject(err);
+        }
+        resolve(reply);
+      });
     });
   }
 }
